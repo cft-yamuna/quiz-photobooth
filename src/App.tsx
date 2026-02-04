@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { Screen, QuizAnswer, QuizSession } from './types';
-import { supabase } from './lib/supabase';
+import { generateImageWithGemini, base64ToDataUrl, GeminiImageResult } from './lib/gemini';
 import StartScreen from './components/StartScreen';
 import NameInputScreen from './components/NameInputScreen';
 import CameraScreen from './components/CameraScreen';
@@ -8,6 +8,9 @@ import InstructionsScreen from './components/InstructionsScreen';
 import QuizScreen from './components/QuizScreen';
 import LoadingScreen from './components/LoadingScreen';
 import ResultScreen from './components/ResultScreen';
+
+// Cricket portrait prompt for image transformation
+const CRICKET_PORTRAIT_PROMPT = `Ultra close-up editorial sports portrait, tight crop from shoulders to head, subject angled slightly from the left side toward the camera, cricket bat resting on the opposite shoulder and held firmly with both hands in padded gloves. White cricket jersey with a clearly visible Nike logo on the chest and gloves, bat branding visible. Dark charcoal / deep grey studio background, dramatic low-key lighting, soft shadows with subtle highlights on fabric and bat, cinematic contrast, textured realism, shallow depth of field, premium sports campaign aesthetic, high resolution, no text, no overlays, no effects, no extra props.`;
 
 function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('start');
@@ -17,6 +20,9 @@ function App() {
     quiz_answers: [],
     gemini_result_url: '',
   });
+
+  // Store the pending Gemini request promise
+  const geminiRequestRef = useRef<Promise<GeminiImageResult> | null>(null);
 
   const handleStart = () => {
     setCurrentScreen('name-input');
@@ -29,6 +35,11 @@ function App() {
 
   const handlePhotoCapture = async (photoDataUrl: string) => {
     setSessionData((prev) => ({ ...prev, photo_url: photoDataUrl }));
+
+    // Start Gemini image generation immediately in the background
+    // This runs while the user completes the quiz
+    geminiRequestRef.current = generateImageWithGemini(CRICKET_PORTRAIT_PROMPT, photoDataUrl);
+
     setCurrentScreen('instructions');
   };
 
@@ -41,54 +52,18 @@ function App() {
     setCurrentScreen('loading');
 
     try {
-      const { data: session, error: insertError } = await supabase
-        .from('quiz_sessions')
-        .insert({
-          user_name: sessionData.user_name,
-          photo_url: sessionData.photo_url,
-          quiz_answers: answers,
-        })
-        .select()
-        .single();
-
-      if (insertError) throw insertError;
-
-      const prompt = generatePromptFromAnswers(sessionData.user_name || '', answers);
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-ai-portrait`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            imageData: sessionData.photo_url,
-            prompt: prompt,
-            sessionId: session.id,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error('Failed to generate AI portrait');
+      // Wait for the already-started Gemini request to complete
+      if (!geminiRequestRef.current) {
+        throw new Error('Image generation was not started');
       }
 
-      const result = await response.json();
-
-      await supabase
-        .from('quiz_sessions')
-        .update({
-          gemini_result_url: result.imageUrl,
-          gemini_prompt: prompt,
-        })
-        .eq('id', session.id);
+      const geminiResult = await geminiRequestRef.current;
+      const imageUrl = base64ToDataUrl(geminiResult.imageData, geminiResult.mimeType);
 
       setSessionData((prev) => ({
         ...prev,
-        gemini_result_url: result.imageUrl,
-        gemini_prompt: prompt,
+        gemini_result_url: imageUrl,
+        gemini_prompt: CRICKET_PORTRAIT_PROMPT,
       }));
 
       setCurrentScreen('result');
@@ -100,6 +75,9 @@ function App() {
   };
 
   const handleRestart = () => {
+    // Clear the pending request
+    geminiRequestRef.current = null;
+
     setSessionData({
       user_name: '',
       photo_url: '',
@@ -107,11 +85,6 @@ function App() {
       gemini_result_url: '',
     });
     setCurrentScreen('start');
-  };
-
-  const generatePromptFromAnswers = (name: string, answers: QuizAnswer[]): string => {
-    const answersText = answers.map((a) => `${a.question}: ${a.answer}`).join('; ');
-    return `Create an artistic portrait for ${name} based on these personality traits and preferences: ${answersText}. Make it creative, vibrant, and unique. The style should reflect their personality as indicated by their answers.`;
   };
 
   return (
@@ -136,3 +109,4 @@ function App() {
 }
 
 export default App;
+
