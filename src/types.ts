@@ -15,6 +15,7 @@ export interface QuizSession {
 }
 
 export type Screen =
+  | 'code-entry'
   | 'start'
   | 'name-input'
   | 'camera'

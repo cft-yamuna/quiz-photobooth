@@ -1,6 +1,8 @@
 import { useState, useRef } from 'react';
 import { Screen, QuizAnswer, QuizSession } from './types';
 import { generateImageWithGemini, base64ToDataUrl, GeminiImageResult } from './lib/gemini';
+import { uploadResultImage, updateRowWithResult } from './lib/supabase';
+import CodeEntryScreen from './components/CodeEntryScreen';
 import StartScreen from './components/StartScreen';
 import NameInputScreen from './components/NameInputScreen';
 import CameraScreen from './components/CameraScreen';
@@ -27,7 +29,8 @@ Shallow depth of field, ultra-realistic textures, natural skin tones, sharp deta
 No text, no overlays, no effects, no extra props.`;
 
 function App() {
-  const [currentScreen, setCurrentScreen] = useState<Screen>('start');
+  const [currentScreen, setCurrentScreen] = useState<Screen>('code-entry');
+  const [supabaseRowId, setSupabaseRowId] = useState<number | null>(null);
   const [sessionData, setSessionData] = useState<Partial<QuizSession>>({
     user_name: '',
     photo_url: '',
@@ -37,6 +40,11 @@ function App() {
 
   // Store the pending Gemini request promise
   const geminiRequestRef = useRef<Promise<GeminiImageResult> | null>(null);
+
+  const handleCodeValid = (rowId: number) => {
+    setSupabaseRowId(rowId);
+    setCurrentScreen('start');
+  };
 
   const handleStart = () => {
     setCurrentScreen('name-input');
@@ -72,25 +80,37 @@ function App() {
       }
 
       const geminiResult = await geminiRequestRef.current;
-      const imageUrl = base64ToDataUrl(geminiResult.imageData, geminiResult.mimeType);
+      const imageDataUrl = base64ToDataUrl(geminiResult.imageData, geminiResult.mimeType);
 
       setSessionData((prev) => ({
         ...prev,
-        gemini_result_url: imageUrl,
+        gemini_result_url: imageDataUrl,
         gemini_prompt: CRICKET_PORTRAIT_PROMPT,
       }));
+
+      // Upload to Supabase Storage and update the row
+      if (supabaseRowId) {
+        const userName = sessionData.user_name || 'user';
+        const fileName = `${userName.replace(/\s+/g, '_')}.png`;
+        const publicUrl = await uploadResultImage(imageDataUrl, fileName);
+
+        if (publicUrl) {
+          await updateRowWithResult(supabaseRowId, userName, publicUrl);
+        }
+      }
 
       setCurrentScreen('result');
     } catch (error) {
       console.error('Error processing quiz:', error);
       alert('An error occurred. Please try again.');
-      setCurrentScreen('start');
+      setCurrentScreen('code-entry');
     }
   };
 
   const handleRestart = () => {
     // Clear the pending request
     geminiRequestRef.current = null;
+    setSupabaseRowId(null);
 
     setSessionData({
       user_name: '',
@@ -98,11 +118,12 @@ function App() {
       quiz_answers: [],
       gemini_result_url: '',
     });
-    setCurrentScreen('start');
+    setCurrentScreen('code-entry');
   };
 
   return (
     <>
+      {currentScreen === 'code-entry' && <CodeEntryScreen onCodeValid={handleCodeValid} />}
       {currentScreen === 'start' && <StartScreen onStart={handleStart} />}
       {currentScreen === 'name-input' && <NameInputScreen onSubmit={handleNameSubmit} />}
       {currentScreen === 'camera' && (
@@ -123,4 +144,3 @@ function App() {
 }
 
 export default App;
-
